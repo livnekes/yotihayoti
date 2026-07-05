@@ -69,27 +69,51 @@ function show_orders_items( $o ) {
 	return $out;
 }
 
-// One row per line item. Order/Date/Customer/Status/Total repeat only on the first
-// row of each order (blank on the rest) so totals aren't double-counted.
+// Column headers, shared by table/CSV/PDF. ילד/מבוגר hold summed quantities.
+const SHOW_ORDERS_VARIANTS = array( 'ילד', 'מבוגר' );
+function show_orders_headers() {
+	return array_merge(
+		array( 'Order', 'Date', 'Customer', 'Product' ),
+		SHOW_ORDERS_VARIANTS,
+		array( 'Status', 'Total' )
+	);
+}
+
+// Sum an order's line-item quantities into the two variant buckets by matching
+// the variant label against each bucket name. ponytail: substring match — a label
+// "מבוגר / כחול" still counts as מבוגר. Returns [ 'ילד' => n, 'מבוגר' => n ].
+function show_orders_variant_qty( $o ) {
+	$q = array_fill_keys( SHOW_ORDERS_VARIANTS, 0 );
+	foreach ( show_orders_items( $o ) as $it ) {
+		foreach ( SHOW_ORDERS_VARIANTS as $v ) {
+			if ( $it[1] !== '' && mb_strpos( $it[1], $v ) !== false ) $q[ $v ] += (int) $it[2];
+		}
+	}
+	return $q;
+}
+
+// One row per order. Products joined into one cell; variant quantities summed
+// into their own columns.
 function show_orders_rows( $orders ) {
 	$rows = array();
 	foreach ( $orders as $o ) {
-		$items = show_orders_items( $o );
-		if ( ! $items ) $items = array( array( '', '', '' ) ); // order with no line items
-		$first = true;
-		foreach ( $items as $it ) {
-			$rows[] = array(
-				$first ? '#' . $o->get_order_number() : '',
-				$first ? ( $o->get_date_created() ? $o->get_date_created()->date( 'Y-m-d H:i' ) : '' ) : '',
-				$first ? ( trim( $o->get_formatted_billing_full_name() ) ?: $o->get_billing_email() ) : '',
-				$it[0], // product
-				$it[1], // variant
-				$it[2], // quantity
-				$first ? wc_get_order_status_name( $o->get_status() ) : '',
-				$first ? $o->get_total() : '',
-			);
-			$first = false;
-		}
+		$items    = show_orders_items( $o );
+		$products = array();
+		foreach ( $items as $it ) if ( $it[0] !== '' ) $products[ $it[0] ] = true;
+		$q = show_orders_variant_qty( $o );
+		$rows[] = array_merge(
+			array(
+				'#' . $o->get_order_number(),
+				$o->get_date_created() ? $o->get_date_created()->date( 'Y-m-d H:i' ) : '',
+				trim( $o->get_formatted_billing_full_name() ) ?: $o->get_billing_email(),
+				implode( ', ', array_keys( $products ) ),
+			),
+			array_map( function ( $v ) use ( $q ) { return $q[ $v ] ?: ''; }, SHOW_ORDERS_VARIANTS ),
+			array(
+				wc_get_order_status_name( $o->get_status() ),
+				$o->get_total(),
+			)
+		);
 	}
 	return $rows;
 }
@@ -108,23 +132,23 @@ add_action( 'admin_init', function () {
 	header( 'Content-Disposition: attachment; filename=orders.csv' );
 	$out = fopen( 'php://output', 'w' );
 	fwrite( $out, "\xEF\xBB\xBF" ); // UTF-8 BOM so Excel reads Hebrew correctly
-	fputcsv( $out, array( 'Order', 'Date', 'Customer', 'Product', 'Variant', 'Quantity', 'Status', 'Total' ) );
+	fputcsv( $out, show_orders_headers() );
 	$sum_total = 0;
-	$sum_variant = array();
+	$sum_variant = array_fill_keys( SHOW_ORDERS_VARIANTS, 0 );
 	foreach ( $include as $id ) {
 		$o = wc_get_order( $id );
 		if ( ! $o ) continue;
 		$sum_total += (float) $o->get_total();
-		foreach ( show_orders_items( $o ) as $it ) {
-			$label = $it[1] !== '' ? $it[1] : '(no variant)';
-			$sum_variant[ $label ] = ( $sum_variant[ $label ] ?? 0 ) + (int) $it[2];
-		}
+		foreach ( show_orders_variant_qty( $o ) as $v => $qty ) $sum_variant[ $v ] += $qty;
 		foreach ( show_orders_rows( array( $o ) ) as $row ) fputcsv( $out, $row );
 	}
-	// Totals rows.
+	// Totals row: variant sums under their columns (4,5), grand total under Total (7).
 	fputcsv( $out, array() );
-	foreach ( $sum_variant as $label => $qty ) fputcsv( $out, array( 'Total', '', '', '', $label, $qty, '', '' ) );
-	fputcsv( $out, array( 'Total Paid', '', '', '', '', '', '', $sum_total ) );
+	$totals = array( 'Total', '', '', '' );
+	foreach ( SHOW_ORDERS_VARIANTS as $v ) $totals[] = $sum_variant[ $v ];
+	$totals[] = '';
+	$totals[] = $sum_total;
+	fputcsv( $out, $totals );
 	fclose( $out );
 	exit;
 } );
@@ -139,28 +163,25 @@ add_action( 'admin_init', function () {
 	$include = isset( $_POST['include'] ) ? array_map( 'intval', (array) $_POST['include'] ) : array();
 	if ( ! $include ) wp_die( 'No orders selected for export.' );
 
-	$headers   = array( 'Order', 'Date', 'Customer', 'Product', 'Variant', 'Quantity', 'Status', 'Total' );
+	$headers   = show_orders_headers();
 	$sum_total = 0;
-	$sum_variant = array();
+	$sum_variant = array_fill_keys( SHOW_ORDERS_VARIANTS, 0 );
 	$body = '';
 	foreach ( $include as $id ) {
 		$o = wc_get_order( $id );
 		if ( ! $o ) continue;
 		$sum_total += (float) $o->get_total();
-		foreach ( show_orders_items( $o ) as $it ) {
-			$label = $it[1] !== '' ? $it[1] : '(no variant)';
-			$sum_variant[ $label ] = ( $sum_variant[ $label ] ?? 0 ) + (int) $it[2];
-		}
+		foreach ( show_orders_variant_qty( $o ) as $v => $qty ) $sum_variant[ $v ] += $qty;
 		foreach ( show_orders_rows( array( $o ) ) as $row ) {
 			$body .= '<tr>';
 			foreach ( $row as $cell ) $body .= '<td>' . esc_html( $cell ) . '</td>';
 			$body .= '</tr>';
 		}
 	}
-	foreach ( $sum_variant as $label => $qty ) {
-		$body .= '<tr class="total"><td>Total</td><td></td><td></td><td></td><td>' . esc_html( $label ) . '</td><td>' . esc_html( $qty ) . '</td><td></td><td></td></tr>';
-	}
-	$body .= '<tr class="total"><td>Total Paid</td><td></td><td></td><td></td><td></td><td></td><td></td><td>' . esc_html( $sum_total ) . '</td></tr>';
+	// Totals row: variant sums under their columns, grand total under Total.
+	$body .= '<tr class="total"><td>Total</td><td></td><td></td><td></td>';
+	foreach ( SHOW_ORDERS_VARIANTS as $v ) $body .= '<td>' . esc_html( $sum_variant[ $v ] ) . '</td>';
+	$body .= '<td></td><td>' . esc_html( $sum_total ) . '</td></tr>';
 
 	$head = '';
 	foreach ( $headers as $h ) $head .= '<th>' . esc_html( $h ) . '</th>';
@@ -215,60 +236,58 @@ function show_orders_page() {
 		echo '<p><button type="submit" name="show_orders_csv" value="1" class="button">Download CSV (checked rows)</button> ';
 		echo '<button type="submit" name="show_orders_pdf" value="1" formtarget="_blank" class="button">Print / PDF (checked rows)</button></p>';
 
+		$headers = show_orders_headers();
 		echo '<table class="wp-list-table widefat striped"><thead><tr>';
-		echo '<th><input type="checkbox" checked onclick="this.closest(\'table\').querySelectorAll(\'tbody input[type=checkbox]\').forEach(c=>c.checked=this.checked)"></th>';
-		foreach ( array( 'Order', 'Date', 'Customer', 'Product', 'Variant', 'Quantity', 'Status', 'Total' ) as $h ) echo '<th>' . esc_html( $h ) . '</th>';
+		echo '<th><input type="checkbox" onclick="this.closest(\'table\').querySelectorAll(\'tbody input[type=checkbox]\').forEach(c=>c.checked=this.checked)"></th>';
+		foreach ( $headers as $h ) echo '<th>' . esc_html( $h ) . '</th>';
 		echo '</tr></thead><tbody>';
-		$sum_total   = 0;
-		$sum_variant = array(); // variant label => total quantity
 		foreach ( $orders as $o ) {
-			$items = show_orders_items( $o );
-			if ( ! $items ) $items = array( array( '', '', '' ) );
-			$span  = count( $items );
-			$sum_total += (float) $o->get_total();
-			$first = true;
-			foreach ( $items as $it ) {
-				$label = $it[1] !== '' ? $it[1] : '(no variant)';
-				if ( $it[2] !== '' ) $sum_variant[ $label ] = ( $sum_variant[ $label ] ?? 0 ) + (int) $it[2];
-				echo '<tr>';
-				if ( $first ) {
-					printf(
-						'<td rowspan="%1$d"><input type="checkbox" name="include[]" value="%2$d" checked></td>'
-						. '<td rowspan="%1$d">#%3$s</td><td rowspan="%1$d">%4$s</td><td rowspan="%1$d">%5$s</td>',
-						$span,
-						$o->get_id(),
-						esc_html( $o->get_order_number() ),
-						esc_html( $o->get_date_created() ? $o->get_date_created()->date( 'Y-m-d H:i' ) : '' ),
-						esc_html( trim( $o->get_formatted_billing_full_name() ) ?: $o->get_billing_email() )
-					);
-				}
-				printf( '<td>%s</td><td>%s</td><td>%s</td>', esc_html( $it[0] ), esc_html( $it[1] ), esc_html( $it[2] ) );
-				if ( $first ) {
-					printf(
-						'<td rowspan="%1$d">%2$s</td><td rowspan="%1$d">%3$s</td>',
-						$span,
-						esc_html( wc_get_order_status_name( $o->get_status() ) ),
-						wp_kses_post( $o->get_formatted_order_total() )
-					);
-				}
-				echo '</tr>';
-				$first = false;
-			}
+			$q = show_orders_variant_qty( $o );
+			echo '<tr>';
+			// Pre-check only orders "בטיפול" (WooCommerce 'processing'); leave others unchecked.
+			$checked = $o->get_status() === 'processing' ? ' checked' : '';
+			// data-* carries this order's numbers so the footer can re-sum checked rows in JS.
+			printf(
+				'<td><input type="checkbox" name="include[]" value="%d" data-total="%s" data-child="%d" data-adult="%d"%s></td>',
+				$o->get_id(), esc_attr( (float) $o->get_total() ), $q['ילד'], $q['מבוגר'], $checked
+			);
+			// show_orders_rows returns exactly one row per order.
+			$row = show_orders_rows( array( $o ) )[0];
+			foreach ( $row as $cell ) echo '<td>' . esc_html( $cell ) . '</td>';
+			echo '</tr>';
 		}
-		if ( ! $orders ) echo '<tr><td colspan="9">No orders.</td></tr>';
+		if ( ! $orders ) echo '<tr><td colspan="' . ( count( $headers ) + 1 ) . '">No orders.</td></tr>';
 		echo '</tbody>';
 
 		if ( $orders ) {
-			$variant_lines = array();
-			foreach ( $sum_variant as $label => $qty ) $variant_lines[] = esc_html( $label . ': ' . $qty );
 			echo '<tfoot><tr style="font-weight:bold">';
-			echo '<td colspan="5">Totals</td>';
-			echo '<td>' . implode( '<br>', $variant_lines ) . '</td>';
-			echo '<td></td>';
-			echo '<td>' . wp_kses_post( wc_price( $sum_total ) ) . '</td>';
+			echo '<td colspan="5">Totals (checked)</td>'; // checkbox + Order/Date/Customer/Product
+			echo '<td id="sum-child"></td><td id="sum-adult"></td>'; // ילד / מבוגר
+			echo '<td></td>'; // Status
+			echo '<td id="sum-total"></td>';
 			echo '</tr></tfoot>';
 		}
 		echo '</table></form>';
+
+		if ( $orders ) {
+			// Live totals: sum data-* over checked boxes, recompute on any change.
+			$currency = html_entity_decode( get_woocommerce_currency_symbol(), ENT_QUOTES, 'UTF-8' );
+			printf( '<script>(function(){
+				var sym=%s;
+				var tbl=document.currentScript.previousElementSibling.querySelector("table")||document.querySelector(".wp-list-table");
+				function recompute(){
+					var child=0,adult=0,total=0;
+					tbl.querySelectorAll("tbody input[type=checkbox]:checked").forEach(function(c){
+						child+=+c.dataset.child||0; adult+=+c.dataset.adult||0; total+=+c.dataset.total||0;
+					});
+					document.getElementById("sum-child").textContent=child||"";
+					document.getElementById("sum-adult").textContent=adult||"";
+					document.getElementById("sum-total").textContent=sym+total.toFixed(2);
+				}
+				tbl.addEventListener("change",function(e){ if(e.target.type==="checkbox") recompute(); });
+				recompute();
+			})();</script>', wp_json_encode( $currency ) );
+		}
 	}
 
 	echo '</div>';
