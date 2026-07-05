@@ -73,9 +73,9 @@ function show_orders_items( $o ) {
 const SHOW_ORDERS_VARIANTS = array( 'ילד', 'מבוגר' );
 function show_orders_headers() {
 	return array_merge(
-		array( 'Order', 'Date', 'Customer', 'Product' ),
+		array( 'הזמנה', 'תאריך', 'לקוח', 'מוצר' ),
 		SHOW_ORDERS_VARIANTS,
-		array( 'Status', 'Total' )
+		array( 'סטטוס', 'סה"כ' )
 	);
 }
 
@@ -163,7 +163,10 @@ add_action( 'admin_init', function () {
 	$include = isset( $_POST['include'] ) ? array_map( 'intval', (array) $_POST['include'] ) : array();
 	if ( ! $include ) wp_die( 'No orders selected for export.' );
 
+	// PDF omits the Date column (index 1); drop it from headers and every row.
+	$drop = 1;
 	$headers   = show_orders_headers();
+	unset( $headers[ $drop ] );
 	$sum_total = 0;
 	$sum_variant = array_fill_keys( SHOW_ORDERS_VARIANTS, 0 );
 	$body = '';
@@ -173,13 +176,14 @@ add_action( 'admin_init', function () {
 		$sum_total += (float) $o->get_total();
 		foreach ( show_orders_variant_qty( $o ) as $v => $qty ) $sum_variant[ $v ] += $qty;
 		foreach ( show_orders_rows( array( $o ) ) as $row ) {
+			unset( $row[ $drop ] );
 			$body .= '<tr>';
 			foreach ( $row as $cell ) $body .= '<td>' . esc_html( $cell ) . '</td>';
 			$body .= '</tr>';
 		}
 	}
-	// Totals row: variant sums under their columns, grand total under Total.
-	$body .= '<tr class="total"><td>Total</td><td></td><td></td><td></td>';
+	// Totals row: 3 leading cells (הזמנה/לקוח/מוצר), variant sums, blank status, grand total.
+	$body .= '<tr class="total"><td>סה"כ</td><td></td><td></td>';
 	foreach ( SHOW_ORDERS_VARIANTS as $v ) $body .= '<td>' . esc_html( $sum_variant[ $v ] ) . '</td>';
 	$body .= '<td></td><td>' . esc_html( $sum_total ) . '</td></tr>';
 
@@ -261,7 +265,7 @@ function show_orders_page() {
 
 		if ( $orders ) {
 			echo '<tfoot><tr style="font-weight:bold">';
-			echo '<td colspan="5">Totals (checked)</td>'; // checkbox + Order/Date/Customer/Product
+			echo '<td colspan="5">סה"כ (מסומנים)</td>'; // checkbox + Order/Date/Customer/Product
 			echo '<td id="sum-child"></td><td id="sum-adult"></td>'; // ילד / מבוגר
 			echo '<td></td>'; // Status
 			echo '<td id="sum-total"></td>';
