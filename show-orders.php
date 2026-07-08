@@ -163,10 +163,7 @@ add_action( 'admin_init', function () {
 	$include = isset( $_POST['include'] ) ? array_map( 'intval', (array) $_POST['include'] ) : array();
 	if ( ! $include ) wp_die( 'No orders selected for export.' );
 
-	// PDF omits the Date column (index 1); drop it from headers and every row.
-	$drop = 1;
 	$headers   = show_orders_headers();
-	unset( $headers[ $drop ] );
 	$sum_total = 0;
 	$sum_variant = array_fill_keys( SHOW_ORDERS_VARIANTS, 0 );
 	$body = '';
@@ -176,14 +173,13 @@ add_action( 'admin_init', function () {
 		$sum_total += (float) $o->get_total();
 		foreach ( show_orders_variant_qty( $o ) as $v => $qty ) $sum_variant[ $v ] += $qty;
 		foreach ( show_orders_rows( array( $o ) ) as $row ) {
-			unset( $row[ $drop ] );
 			$body .= '<tr>';
 			foreach ( $row as $cell ) $body .= '<td>' . esc_html( $cell ) . '</td>';
 			$body .= '</tr>';
 		}
 	}
-	// Totals row: 3 leading cells (הזמנה/לקוח/מוצר), variant sums, blank status, grand total.
-	$body .= '<tr class="total"><td>סה"כ</td><td></td><td></td>';
+	// Totals row: 4 leading cells (הזמנה/תאריך/לקוח/מוצר), variant sums, blank status, grand total.
+	$body .= '<tr class="total"><td>סה"כ</td><td></td><td></td><td></td>';
 	foreach ( SHOW_ORDERS_VARIANTS as $v ) $body .= '<td>' . esc_html( $sum_variant[ $v ] ) . '</td>';
 	$body .= '<td></td><td>' . esc_html( $sum_total ) . '</td></tr>';
 
@@ -193,11 +189,13 @@ add_action( 'admin_init', function () {
 	// Standalone HTML doc (not the admin chrome) so print output is clean. Auto-print on load.
 	header( 'Content-Type: text/html; charset=utf-8' );
 	echo '<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>Orders</title><style>'
-		. 'body{font-family:sans-serif;font-size:12px}'
-		. 'table{border-collapse:collapse;width:100%}'
-		. 'th,td{border:1px solid #999;padding:4px 6px;text-align:right}'
+		. 'body{font-family:sans-serif;font-size:9px}'
+		. 'table{border-collapse:collapse;width:100%;table-layout:fixed}'
+		. 'th,td{border:1px solid #999;padding:1px 4px;text-align:right;line-height:1.15;word-wrap:break-word;overflow-wrap:break-word}'
+		. 'td:nth-child(5),th:nth-child(5),td:nth-child(6),th:nth-child(6){text-align:center;width:7%}' // ילד/מבוגר
+		. 'td:nth-child(1),th:nth-child(1),td:nth-child(7),th:nth-child(7),td:nth-child(8),th:nth-child(8){width:8%}' // הזמנה/סטטוס/סה"כ
 		. 'thead{background:#eee}.total{font-weight:bold}'
-		. '@media print{@page{size:landscape}}'
+		. '@media print{@page{size:portrait;margin:8mm}}'
 		. '</style></head><body onload="window.print()">'
 		. '<table><thead><tr>' . $head . '</tr></thead><tbody>' . $body . '</tbody></table>'
 		. '</body></html>';
@@ -237,6 +235,7 @@ function show_orders_page() {
 		// Table is a form: checked rows get exported. Uncheck to exclude from the CSV.
 		echo '<form method="post">';
 		wp_nonce_field( 'show_orders_csv' );
+		echo '<input type="hidden" name="product" value="' . esc_attr( $product_id ) . '">';
 		echo '<p><button type="submit" name="show_orders_csv" value="1" class="button">Download CSV (checked rows)</button> ';
 		echo '<button type="submit" name="show_orders_pdf" value="1" formtarget="_blank" class="button">Print / PDF (checked rows)</button></p>';
 
